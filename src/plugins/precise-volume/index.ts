@@ -29,6 +29,30 @@ export type PreciseVolumePluginConfig = {
   savedVolume: number | undefined;
 };
 
+let registeredShortcuts: {
+  volumeUp?: string;
+  volumeDown?: string;
+} = {};
+
+let currentIpc: BackendContext<PreciseVolumePluginConfig>['ipc'] | null = null;
+
+// Helper function to normalize accelerator strings
+// Electron's globalShortcut on Linux has issues with numpad keys
+function normalizeAccelerator(accelerator: string): string {
+  // On Linux, global shortcuts need a modifier key (Ctrl, Alt, Shift, etc.)
+  // Convert "Num8" -> "8", but bare number keys won't work as global shortcuts
+  // They need modifiers like "Ctrl+8" or "Alt+8"
+  const normalized = accelerator.replace(/num(\d)/gi, '$1');
+  
+  // Check if there's already a modifier (contains +)
+  if (!normalized.includes('+')) {
+    console.warn('[PreciseVolume] Global shortcut without modifier detected:', accelerator, 
+                 '- On Linux, global shortcuts require a modifier key (Ctrl, Alt, Shift, etc.)');
+  }
+  
+  return normalized;
+}
+
 export default createPlugin({
   name: () => t('plugins.precise-volume.name'),
   description: () => t('plugins.precise-volume.description'),
@@ -132,11 +156,12 @@ export default createPlugin({
             accelerator;
         }
 
+        console.log('[PreciseVolume] Setting new global shortcuts:', newGlobalShortcuts);
         changeOptions({ globalShortcuts: newGlobalShortcuts }, options);
 
         item.checked =
-          Boolean(options.globalShortcuts.volumeUp) ||
-          Boolean(options.globalShortcuts.volumeDown);
+          Boolean(newGlobalShortcuts.volumeUp) ||
+          Boolean(newGlobalShortcuts.volumeDown);
       } else {
         // Reset checkbox if prompt was canceled
         item.checked = !item.checked;
@@ -168,20 +193,132 @@ export default createPlugin({
     ];
   },
 
-  async backend({ getConfig, ipc }) {
-    const config = await getConfig();
+  backend: {
+    async start({ getConfig, ipc }) {
+      const config = await getConfig();
+      currentIpc = ipc;
 
-    if (config.globalShortcuts?.volumeUp) {
-      globalShortcut.register(config.globalShortcuts.volumeUp, () =>
-        ipc.send('changeVolume', true),
-      );
-    }
+      console.log('[PreciseVolume] Starting backend with config:', config.globalShortcuts);
 
-    if (config.globalShortcuts?.volumeDown) {
-      globalShortcut.register(config.globalShortcuts.volumeDown, () =>
-        ipc.send('changeVolume', false),
-      );
-    }
+      if (config.globalShortcuts?.volumeUp) {
+        const accelerator = normalizeAccelerator(config.globalShortcuts.volumeUp);
+        console.log('[PreciseVolume] Normalized volumeUp accelerator:', config.globalShortcuts.volumeUp, '->', accelerator);
+        try {
+          const success = globalShortcut.register(
+            accelerator,
+            () => {
+              console.log('[PreciseVolume] Volume Up shortcut triggered');
+              ipc.send('changeVolume', true);
+            },
+          );
+          if (success) {
+            registeredShortcuts.volumeUp = accelerator;
+            console.log('[PreciseVolume] Successfully registered volumeUp:', accelerator);
+          } else {
+            console.error('[PreciseVolume] Failed to register volumeUp (already in use?):', accelerator);
+          }
+        } catch (error) {
+          console.error('[PreciseVolume] Error registering volumeUp:', accelerator, error);
+        }
+      }
+
+      if (config.globalShortcuts?.volumeDown) {
+        const accelerator = normalizeAccelerator(config.globalShortcuts.volumeDown);
+        console.log('[PreciseVolume] Normalized volumeDown accelerator:', config.globalShortcuts.volumeDown, '->', accelerator);
+        try {
+          const success = globalShortcut.register(
+            accelerator,
+            () => {
+              console.log('[PreciseVolume] Volume Down shortcut triggered');
+              ipc.send('changeVolume', false);
+            },
+          );
+          if (success) {
+            registeredShortcuts.volumeDown = accelerator;
+            console.log('[PreciseVolume] Successfully registered volumeDown:', accelerator);
+          } else {
+            console.error('[PreciseVolume] Failed to register volumeDown (already in use?):', accelerator);
+          }
+        } catch (error) {
+          console.error('[PreciseVolume] Error registering volumeDown:', accelerator, error);
+        }
+      }
+
+      console.log('[PreciseVolume] All registered global shortcuts:', globalShortcut.isRegistered(config.globalShortcuts?.volumeUp || ''), globalShortcut.isRegistered(config.globalShortcuts?.volumeDown || ''));
+    },
+
+    async onConfigChange(newConfig) {
+      if (!currentIpc) {
+        console.warn('[PreciseVolume] onConfigChange called but no IPC available');
+        return;
+      }
+
+      console.log('[PreciseVolume] Config changed:', newConfig.globalShortcuts);
+
+      // Unregister old shortcuts
+      if (registeredShortcuts.volumeUp) {
+        globalShortcut.unregister(registeredShortcuts.volumeUp);
+        console.log('[PreciseVolume] Unregistered old volumeUp:', registeredShortcuts.volumeUp);
+      }
+      if (registeredShortcuts.volumeDown) {
+        globalShortcut.unregister(registeredShortcuts.volumeDown);
+        console.log('[PreciseVolume] Unregistered old volumeDown:', registeredShortcuts.volumeDown);
+      }
+      registeredShortcuts = {};
+
+      // Register new shortcuts
+      if (newConfig.globalShortcuts?.volumeUp) {
+        const accelerator = normalizeAccelerator(newConfig.globalShortcuts.volumeUp);
+        console.log('[PreciseVolume] Normalized new volumeUp accelerator:', newConfig.globalShortcuts.volumeUp, '->', accelerator);
+        try {
+          const success = globalShortcut.register(
+            accelerator,
+            () => {
+              console.log('[PreciseVolume] Volume Up shortcut triggered');
+              currentIpc!.send('changeVolume', true);
+            },
+          );
+          if (success) {
+            registeredShortcuts.volumeUp = accelerator;
+            console.log('[PreciseVolume] Registered new volumeUp:', accelerator);
+          }
+        } catch (error) {
+          console.error('[PreciseVolume] Error registering new volumeUp:', accelerator, error);
+        }
+      }
+
+      if (newConfig.globalShortcuts?.volumeDown) {
+        const accelerator = normalizeAccelerator(newConfig.globalShortcuts.volumeDown);
+        console.log('[PreciseVolume] Normalized new volumeDown accelerator:', newConfig.globalShortcuts.volumeDown, '->', accelerator);
+        try {
+          const success = globalShortcut.register(
+            accelerator,
+            () => {
+              console.log('[PreciseVolume] Volume Down shortcut triggered');
+              currentIpc!.send('changeVolume', false);
+            },
+          );
+          if (success) {
+            registeredShortcuts.volumeDown = accelerator;
+            console.log('[PreciseVolume] Registered new volumeDown:', accelerator);
+          }
+        } catch (error) {
+          console.error('[PreciseVolume] Error registering new volumeDown:', accelerator, error);
+        }
+      }
+    },
+
+    stop() {
+      console.log('[PreciseVolume] Stopping backend');
+      if (registeredShortcuts.volumeUp) {
+        globalShortcut.unregister(registeredShortcuts.volumeUp);
+      }
+      if (registeredShortcuts.volumeDown) {
+        globalShortcut.unregister(registeredShortcuts.volumeDown);
+      }
+      registeredShortcuts = {};
+      currentIpc = null;
+    },
   },
 
   renderer: {

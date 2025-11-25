@@ -2,7 +2,7 @@
 
 const ignored = {
   id: ['volume-slider', 'expand-volume-slider'],
-  types: ['mousewheel', 'keydown', 'keyup'],
+  types: ['wheel', 'mousewheel', 'keydown', 'keyup'],
 } as const;
 
 function overrideAddEventListener() {
